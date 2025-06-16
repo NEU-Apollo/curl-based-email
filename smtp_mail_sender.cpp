@@ -12,13 +12,21 @@
 
 namespace smtp
 {
-    struct UploadStatus
+    size_t EmailSender::get_class_count() const
     {
-        size_t bytes_read;
-        const std::string payload;
-    };
+        std::vector<size_t> values = {html_text_body.size(), attachement_filepath.size(), plain_text_body.size()};
 
-    std::string generateBoundary()
+        size_t true_count = 0;
+        for (bool value : values)
+        {
+            if (value != 0)
+                true_count++;
+        }
+
+        return true_count;
+    }
+
+    std::string EmailSender::generateBoundary() const
     {
         std::stringstream ss;
         // 固定前缀保证以字母开头
@@ -38,7 +46,7 @@ namespace smtp
 
     // file_path: 文件完整路径
     // 返回值: 读取到的内容（可能包含 '\0'，适合做base64等二进制操作）
-    inline std::string read_file_to_string(const std::string &file_path)
+    std::string EmailSender::read_file_to_string(const std::string &file_path) const
     {
         std::ifstream file(file_path, std::ios::binary); // 二进制方式打开
         if (!file)
@@ -61,6 +69,12 @@ namespace smtp
         return buffer;
     }
 
+    struct UploadStatus
+    {
+        size_t bytes_read;
+        const std::string payload;
+    };
+
     size_t payload_source(void *ptr, size_t size, size_t nmemb, void *userp)
     {
         UploadStatus *upload_ctx = static_cast<UploadStatus *>(userp);
@@ -75,10 +89,10 @@ namespace smtp
         upload_ctx->bytes_read += bytes_to_copy;
         return bytes_to_copy;
     }
-
-    bool send_email(const EmailInfo &info)
+    
+    bool EmailSender::send_email()
     {
-        if (info.contentclass.is_empty())
+        if (is_empty())
         {
             throw std::runtime_error("EmailInfo::contentclass is empty");
         }
@@ -92,59 +106,85 @@ namespace smtp
         curl_slist *recipients = nullptr;
 
         std::string payload;
-        payload += "To: " + info.to + "\r\n";
-        payload += "From: " + info.from + "\r\n";
-        payload += "Subject: " + info.subject + "\r\n";
+        payload += "To: " + to + "\r\n";
+        payload += "From: " + from + "\r\n";
+        payload += "Subject: " + subject + "\r\n";
         payload += "MIME-Version: 1.0\r\n";
 
-        std::string boundary_str = generateBoundary();
-        bool is_hybrid = info.contentclass.is_hybrid();
+        std::string boundary_mixed = generateBoundary();       // mixed 边界
+        std::string boundary_alternative = generateBoundary(); // alternative 边界
+        bool has_plain = !plain_text_body.empty();
+        bool has_html = !html_text_body.empty();
+        bool has_attachment = !attachement_filepath.empty();
+        bool is_alternative = has_plain && has_html;
+        bool is_mixed = has_attachment || is_alternative;
 
-        if (is_hybrid)
-        {
-            payload += "Content-Type: multipart/mixed; boundary=\"" + boundary_str + "\"\r\n\r\n";
+        if (is_mixed) {
+            payload += "Content-Type: multipart/mixed; boundary=\"" + boundary_mixed + "\"\r\n\r\n";
+            if (is_alternative) {
+                payload += "--" + boundary_mixed + "\r\n";
+                payload += "Content-Type: multipart/alternative; boundary=\"" + boundary_alternative + "\"\r\n\r\n";
+
+                // plain part
+                payload += "--" + boundary_alternative + "\r\n";
+                payload += "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
+                payload += plain_text_body + "\r\n";
+
+                // html part
+                payload += "--" + boundary_alternative + "\r\n";
+                payload += "Content-Type: text/html; charset=UTF-8\r\n\r\n";
+                payload += html_text_body + "\r\n";
+
+                payload += "--" + boundary_alternative + "--\r\n";
+            } else if (has_plain) {
+                payload += "--" + boundary_mixed + "\r\n";
+                payload += "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
+                payload += plain_text_body + "\r\n";
+            } else if (has_html) {
+                payload += "--" + boundary_mixed + "\r\n";
+                payload += "Content-Type: text/html; charset=UTF-8\r\n\r\n";
+                payload += html_text_body + "\r\n";
+            }
+
+            // 附件部分
+            if (has_attachment) {
+                payload += "--" + boundary_mixed + "\r\n";
+                std::string attachment_content = read_file_to_string(attachement_filepath);
+                std::string encoded = base64_encode(
+                    reinterpret_cast<const unsigned char *>(attachment_content.data()),
+                    attachment_content.size());
+
+                std::string filename = std::filesystem::path(attachement_filepath).filename().string();
+
+                payload += "Content-Type: application/octet-stream; name=\"" + filename + "\"\r\n";
+                payload += "Content-Transfer-Encoding: base64\r\n";
+                payload += "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n\r\n";
+                payload += encoded + "\r\n";
+            }
+
+            payload += "--" + boundary_mixed + "--\r\n";
         }
-        if (info.contentclass.get_has_plain_text())
-        {
-            if (is_hybrid)
-                payload += "--" + boundary_str + "\r\n";
+        else if (has_plain) {
             payload += "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-            payload += info.plain_text_body + "\r\n";
+            payload += plain_text_body + "\r\n";
         }
-        if (info.contentclass.get_has_html())
-        {
-            if (is_hybrid)
-                payload += "--" + boundary_str + "\r\n";
+        else if (has_html) {
             payload += "Content-Type: text/html; charset=UTF-8\r\n\r\n";
-            payload += info.html_text_body + "\r\n";
+            payload += html_text_body + "\r\n";
         }
-        if (info.contentclass.get_has_attachments())
-        {
-            if (is_hybrid)
-                payload += "--" + boundary_str + "\r\n";
-            std::string attachment_content = read_file_to_string(info.attachement_filepath);
-            std::string encoded = base64_encode(
-                reinterpret_cast<const unsigned char *>(attachment_content.data()),
-                attachment_content.size());
-            payload += "Content-Type: application/octet-stream\r\n";
-            payload += "Content-Disposition: attachment; filename=\"" +
-                       std::filesystem::path(info.attachement_filepath).filename().string() + "\"\r\n";
-            payload += "Content-Transfer-Encoding: base64\r\n\r\n";
-            payload += encoded + "\r\n";
-        }
-        if (is_hybrid)
-        {
-            payload += "--" + boundary_str + "--\r\n";
+        else {
+            // 没有内容，理论上上层已经做过判断
+            throw std::runtime_error("邮件内容为空");
         }
 
         UploadStatus upload_ctx = {0, payload};
 
-        curl_easy_setopt(curl, CURLOPT_URL, info.smtp_url.c_str());                 // 设置SMTP服务器地址
+        curl_easy_setopt(curl, CURLOPT_URL, smtp_url.c_str());                 // 设置SMTP服务器地址
         curl_easy_setopt(curl, CURLOPT_PORT, 587L);                                 // 设置SMTP端口
-        curl_easy_setopt(curl, CURLOPT_USERNAME, info.username.c_str());            // 设置SMTP用户名
-        curl_easy_setopt(curl, CURLOPT_PASSWORD, info.password.c_str());            // 设置SMTP密码（授权码）
-        curl_easy_setopt(curl, CURLOPT_MAIL_FROM, ("<" + info.from + ">").c_str()); // 设置发件人邮箱
-        recipients = curl_slist_append(nullptr, ("<" + info.to + ">").c_str());     // 构造收件人邮箱列表
+        curl_easy_setopt(curl, CURLOPT_USERNAME, username.c_str());            // 设置SMTP用户名
+        curl_easy_setopt(curl, CURLOPT_PASSWORD, password.c_str());            // 设置SMTP密码（授权码）
+        curl_easy_setopt(curl, CURLOPT_MAIL_FROM, ("<" + from + ">").c_str()); // 设置发件人邮箱
+        recipients = curl_slist_append(nullptr, ("<" + to + ">").c_str());     // 构造收件人邮箱列表
         curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);                      // 设置收件人邮箱
         curl_easy_setopt(curl, CURLOPT_USE_SSL, CURLUSESSL_ALL);                    // 启用SSL/TLS加密传输
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);                         // 跳过SSL证书校验

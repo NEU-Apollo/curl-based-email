@@ -7,57 +7,7 @@
 
 namespace smtp
 {
-    struct EmailInfo
-    {
-        class EmailContentClass
-        {
-            bool is_html = false;         // 是否HTML格式
-            bool has_attachments = false; // 是否有附件
-            bool is_plain_text = false;
-
-            size_t get_class_count() const
-            {
-                std::vector<bool> values = {is_html, has_attachments, is_plain_text};
-
-                size_t true_count = 0;
-                for (bool value : values)
-                {
-                    if (value)
-                        true_count++;
-                }
-
-                return true_count;
-            }
-
-        public:
-            void set_html()
-            {
-                this->is_html = true;
-            }
-            void set_attachments()
-            {
-                this->has_attachments = true;
-            }
-            void set_plain_text()
-            {
-                this->is_plain_text = true;
-            }
-
-            bool get_has_html() const { return is_html; }
-            bool get_has_attachments() const { return has_attachments; }
-            bool get_has_plain_text() const { return is_plain_text; }
-
-            bool is_empty() const
-            {
-                return get_class_count() == 0;
-            }
-
-            bool is_hybrid() const
-            {
-                return get_class_count() >= 2; // 判断是否有两个或更多为true
-            }
-        };
-
+    class EmailSender {
         std::string smtp_url;        // SMTP地址，例如 smtp://smtp.qq.com:587
         std::string username;        // 邮箱账号
         std::string password;        // 邮箱密码（授权码）
@@ -67,8 +17,42 @@ namespace smtp
         std::string plain_text_body; // 邮件内容（纯文本）
         std::string html_text_body;  // 邮件内容（HTML）
         std::string attachement_filepath; //  附件路径
-        EmailContentClass contentclass; // 邮件内容类型
-    };
+        std::string generateBoundary() const;
+        std::string read_file_to_string(const std::string &file_path) const;
+        bool is_empty() {
+            return get_class_count() == 0;
+        }
+        bool is_hybrid() {
+            return get_class_count() > 1;
+        }
+    public:
+        EmailSender(const std::string &smtp_url,
+                    const std::string &username,
+                    const std::string &password,
+                    const std::string &from,
+                    const std::string &to,
+                    const std::string &subject)
+            : smtp_url(smtp_url),
+            username(username),
+            password(password),
+            from(from),
+            to(to),
+            subject(subject) {}
 
-    bool send_email(const EmailInfo &info);
+        size_t get_class_count() const;
+        bool send_email();
+
+        // 可以添加额外的setter函数设置可选项
+        void set_plain_text_body(const std::string &text) {
+            plain_text_body = text;
+        }
+
+        void set_html_text_body(const std::string &html) {
+            html_text_body = html;
+        }
+
+        void set_attachment(const std::string &filepath) {
+            attachement_filepath = filepath;
+        }
+    };
 }
